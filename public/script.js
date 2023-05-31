@@ -13,6 +13,7 @@ import {
     textgenerationwebui_settings,
     loadTextGenSettings,
     generateTextGenWithStreaming,
+    getTextGenGenerationData,
 } from "./scripts/textgen-settings.js";
 
 import {
@@ -81,6 +82,7 @@ import {
 } from "./scripts/openai.js";
 
 import {
+    getNovelGenerationData,
     getNovelTier,
     loadNovelPreset,
     loadNovelSettings,
@@ -119,6 +121,7 @@ import {
     isElementInViewport,
     sortMoments,
     timestampToMoment,
+    download,
 } from "./scripts/utils.js";
 
 import { extension_settings, loadExtensionSettings, runGenerationInterceptors } from "./scripts/extensions.js";
@@ -332,42 +335,42 @@ const system_messages = {
         is_user: false,
         is_name: true,
         mes: [
-            `<h2>Welcome to <span id="version_display_welcome">SillyTavern</span>!</h2>
-            <div id="version_display_welcome"></div>
-            <h3>Want to Update to the latest version?</h3>
-            Read the <a href='/notes/update.html' target='_blank'>instructions here</a>. Also located in your installation's base folder
-            <hr>
-            <h3>In order to begin chatting:</h3>
-            <ol>
-            <li>Connect to one of the supported generation APIs (the plug icon)</li>
-            <li>Create or pick a character from the list (the top-right namecard icon)</li>
-            </ol>
-            <hr>
-            <h3>Where to download more characters?</h3>
-            <i>(Not endorsed, your discretion is advised)</i>
-            <ol>
-            <li><a target="_blank" href="https://discord.gg/pygmalionai">Pygmalion AI Discord</a></li>
-            <li><a target="_blank" href="https://www.characterhub.org/">CharacterHub (NSFW)</a></li>
-            </ol>
-            <hr>
-            <h3>Where can I get help?</h3>
-            Before going any further, check out the following resources:
-            <ol>
-            <li><a target="_blank" href="/notes/readme.md">Introduction to SillyTavern</a></li>
-            <li><a target="_blank" href="/notes/faq.md">SillyTavern FAQ</a></li>
-            <li><a target="_blank" href="/notes">SillyTavern Guidebook</a></li>
-            <li><a target="_blank" href="https://github.com/Cohee1207/TavernAI-extras/blob/main/README.md">Extras API Docs</a></li>
-            <li><a target="_blank" href="https://docs.alpindale.dev/">Pygmalion AI Docs</a></li>
-            </ol>
-            Type <tt>/?</tt> in any chat to get help on message formatting commands.
-            <hr>
-            <h3>Still have questions or suggestions left?</h3>
-            <a target="_blank" href="https://discord.gg/RZdyAEUPvj">SillyTavern Community Discord</a>
-            <br>
-            <a target="_blank" href="https://github.com/Cohee1207/SillyTavern/issues">Post a GitHub issue.</a>
-            <br>
-            <a target="_blank" href="https://github.com/Cohee1207/SillyTavern#questions-or-suggestions">Contact the developers.</a>
-        `].join('')
+            '<h2>Welcome to <span id="version_display_welcome">SillyTavern</span>!</h2>',
+            '<div id="version_display_welcome"></div>',
+            '<h3>Want to Update to the latest version?</h3>',
+            "Read the <a href='/notes/update.html' target='_blank'>instructions here</a>. Also located in your installation's base folder",
+            '<hr>',
+            '<h3>In order to begin chatting:</h3>',
+            '<ol>',
+            '<li>Connect to one of the supported generation APIs (the plug icon)</li>',
+            '<li>Create or pick a character from the list (the top-right namecard icon)</li>',
+            '</ol>',
+            '<hr>',
+            '<h3>Where to download more characters?</h3>',
+            '<i>(Not endorsed, your discretion is advised)</i>',
+            '<ol>',
+            '<li><a target="_blank" href="https://discord.gg/pygmalionai">Pygmalion AI Discord</a></li>',
+            '<li><a target="_blank" href="https://www.characterhub.org/">CharacterHub (NSFW)</a></li>',
+            '</ol>',
+            '<hr>',
+            '<h3>Where can I get help?</h3>',
+            'Before going any further, check out the following resources:',
+            '<ol>',
+            '<li><a target="_blank" href="/notes/readme.md">Introduction to SillyTavern</a></li>',
+            '<li><a target="_blank" href="/notes/faq.md">SillyTavern FAQ</a></li>',
+            '<li><a target="_blank" href="/notes">SillyTavern Guidebook</a></li>',
+            '<li><a target="_blank" href="https://github.com/Cohee1207/TavernAI-extras/blob/main/README.md">Extras API Docs</a></li>',
+            '<li><a target="_blank" href="https://docs.alpindale.dev/">Pygmalion AI Docs</a></li>',
+            '</ol>',
+            'Type <tt>/?</tt> in any chat to get help on message formatting commands.',
+            '<hr>',
+            '<h3>Still have questions or suggestions left?</h3>',
+            '<a target="_blank" href="https://discord.gg/RZdyAEUPvj">SillyTavern Community Discord</a>',
+            '<br>',
+            '<a target="_blank" href="https://github.com/Cohee1207/SillyTavern/issues">Post a GitHub issue.</a>',
+            '<br>',
+            '<a target="_blank" href="https://github.com/Cohee1207/SillyTavern#questions-or-suggestions">Contact the developers.</a>',
+        ].join('')
     },
     group: {
         name: systemUserName,
@@ -418,6 +421,7 @@ export const event_types = {
     MESSAGE_SENT: 'message_sent',
     MESSAGE_RECEIVED: 'message_received',
     MESSAGE_EDITED: 'message_edited',
+    MESSAGE_DELETED: 'message_deleted',
     IMPERSONATE_READY: 'impersonate_ready',
     CHAT_CHANGED: 'chat_id_changed',
 }
@@ -1014,6 +1018,7 @@ function deleteLastMessage() {
     count_view_mes--;
     chat.length = chat.length - 1;
     $('#chat').children('.mes').last().remove();
+    eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
 }
 
 export async function reloadCurrentChat() {
@@ -1100,6 +1105,14 @@ function getMessageFromTemplate({ mesId, characterName, isUser, avatarImg, bias,
     return mes;
 }
 
+export function updateMessageBlock(messageId, message) {
+    const messageElement = $(`#chat [mesid="${messageId}"]`);
+    const text = message?.extra?.display_text ?? message.mes;
+    messageElement.find('.mes_text').html(messageFormatting(text, message.name, message.is_system, message.is_user));
+    addCopyToCodeBlocks(messageElement)
+    appendImageToMessage(message, messageElement);
+}
+
 export function appendImageToMessage(mes, messageElement) {
     if (mes.extra?.image) {
         const image = messageElement.find('.mes_img');
@@ -1113,7 +1126,7 @@ export function appendImageToMessage(mes, messageElement) {
     }
 }
 
-function addCopyToCodeBlocks(messageElement) {
+export function addCopyToCodeBlocks(messageElement) {
     const codeBlocks = $(messageElement).find("pre code");
     for (let i = 0; i < codeBlocks.length; i++) {
         hljs.highlightElement(codeBlocks.get(i));
@@ -1208,7 +1221,8 @@ function addOneMessage(mes, { type = "normal", insertAfter = null, scroll = true
         }
     }
 
-    const newMessage = $(`#chat [mesid="${count_view_mes}"]`);
+    const newMessageId = type == 'swipe' ? count_view_mes - 1 : count_view_mes;
+    const newMessage = $(`#chat [mesid="${newMessageId}"]`);
     const isSmallSys = mes?.extra?.isSmallSys;
     newMessage.data("isSystem", isSystem);
 
@@ -1234,6 +1248,7 @@ function addOneMessage(mes, { type = "normal", insertAfter = null, scroll = true
         for (var i = 0; i < itemizedPrompts.length; i++) {
             if (itemizedPrompts[i].mesId === mesIdToFind) {
                 newMessage.find(".mes_prompt").show();
+                break;
                 //console.log(`showing prompt for mesID ${params.mesId} from ${params.characterName}`);
             } else {
                 //console.log(`no cache obj for mesID ${mesIdToFind}, hiding prompt button and continuing search`);
@@ -1820,6 +1835,7 @@ async function Generate(type, { automatic_trigger, force_name2, resolve, reject,
                 $('#chat').children().last().hide(500, function () {
                     $(this).remove();
                 });
+                eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
             }
         }
 
@@ -2298,7 +2314,7 @@ async function Generate(type, { automatic_trigger, force_name2, resolve, reject,
             let additionalPromptStuff = {
                 ...thisPromptBits[currentArrayEntry],
                 rawPrompt: generate_data.prompt,
-                mesId: Number(count_view_mes),
+                mesId: type == 'swipe' ? Number(count_view_mes - 1) : Number(count_view_mes),
                 worldInfoBefore: worldInfoBefore,
                 allAnchors: allAnchors,
                 summarizeString: (extension_prompts['1_memory']?.value || ''),
@@ -2374,11 +2390,17 @@ async function Generate(type, { automatic_trigger, force_name2, resolve, reject,
                             hideSwipeButtons();
                             tokens_already_generated += this_amount_gen;            // add new gen amt to any prev gen counter..
                             getMessage = message_already_generated;
-                            runGenerate(getMessage);
-                            console.log('returning to make generate again');
-                            return;
+
+                            // if any tokens left to generate
+                            if (getMultigenAmount() > 0) {
+                                runGenerate(getMessage);
+                                console.log('returning to make generate again');
+                                return;
+                            }
                         }
 
+                        tokens_already_generated = 0;
+                        generatedPromtCache = "";
                         getMessage = message_already_generated.substring(magFirst.length);
                     }
 
@@ -2452,6 +2474,7 @@ async function Generate(type, { automatic_trigger, force_name2, resolve, reject,
                         }
                     }
                 } else {
+                    generatedPromtCache = '';
                     activateSendButtons();
                     //console.log('runGenerate calling showSwipeBtns');
                     showSwipeButtons();
@@ -2490,7 +2513,7 @@ async function Generate(type, { automatic_trigger, force_name2, resolve, reject,
     //console.log('generate ending');
 } //generate ends
 
-function getBiasStrings(textareaText) {
+export function getBiasStrings(textareaText) {
     let promptBias = '';
     let messageBias = extractMessageBias(textareaText);
 
@@ -2529,7 +2552,7 @@ export function replaceBiasMarkup(str) {
     return (str ?? '').replace(/{{(\*?.*\*?)}}/g, '');
 }
 
-async function sendMessageAsUser(textareaText, messageBias) {
+export async function sendMessageAsUser(textareaText, messageBias) {
     chat[chat.length] = {};
     chat[chat.length - 1]['name'] = name1;
     chat[chat.length - 1]['is_user'] = true;
@@ -2711,16 +2734,17 @@ function promptItemize(itemizedPrompts, requestedMesId) {
         var oaiNudgeTokens = itemizedPrompts[thisPromptSet].oaiNudgeTokens;
         var oaiImpersonateTokens = itemizedPrompts[thisPromptSet].oaiImpersonateTokens;
         var finalPromptTokens =
+            oaiStartTokens +
+            oaiPromptTokens +
             oaiBiasTokens +
             oaiImpersonateTokens +
             oaiJailbreakTokens +
             oaiNudgeTokens +
-            oaiPromptTokens +
             ActualChatHistoryTokens +
-            charDescriptionTokens +
-            charPersonalityTokens +
-            allAnchorsTokens +
-            worldInfoStringTokens +
+            //charDescriptionTokens +
+            //charPersonalityTokens +
+            //allAnchorsTokens +
+            //worldInfoStringTokens +
             examplesStringTokens;
         // OAI doesn't use padding
         thisPrompt_padding = 0;
@@ -2785,6 +2809,7 @@ function promptItemize(itemizedPrompts, requestedMesId) {
             <div class="flex-container">
                 <div class="flex-container flex1 flexFlowColumns flexNoGap wide50p tokenGraph">
                 <div class="wide100p" style="background-color: grey; height: ${oaiSystemTokensPercentage}%;"></div>
+                    <div class="wide100p" style="background-color: salmon; height: ${oaiStartTokensPercentage}%;"></div>
                     <div class="wide100p" style="background-color: indianred; height: ${storyStringTokensPercentage}%;"></div>
                     <div class="wide100p" style="background-color: gold; height: ${worldInfoStringTokensPercentage}%;"></div>
                     <div class="wide100p" style="background-color: palegreen; height: ${ActualChatHistoryTokensPercentage}%;"></div>
@@ -2986,63 +3011,6 @@ function setInContextMessages(lastmsg, type) {
     }
 
     $('#chat .mes:not([is_system="true"])').eq(-lastmsg).addClass('lastInContext');
-}
-
-// TODO: move to textgen-settings.js
-function getTextGenGenerationData(finalPromt, this_amount_gen, isImpersonate) {
-    return {
-        'prompt': finalPromt,
-        'max_new_tokens': this_amount_gen,
-        'do_sample': textgenerationwebui_settings.do_sample,
-        'temperature': textgenerationwebui_settings.temp,
-        'top_p': textgenerationwebui_settings.top_p,
-        'typical_p': textgenerationwebui_settings.typical_p,
-        'repetition_penalty': textgenerationwebui_settings.rep_pen,
-        'encoder_repetition_penalty': textgenerationwebui_settings.encoder_rep_pen,
-        'top_k': textgenerationwebui_settings.top_k,
-        'min_length': textgenerationwebui_settings.min_length,
-        'no_repeat_ngram_size': textgenerationwebui_settings.no_repeat_ngram_size,
-        'num_beams': textgenerationwebui_settings.num_beams,
-        'penalty_alpha': textgenerationwebui_settings.penalty_alpha,
-        'length_penalty': textgenerationwebui_settings.length_penalty,
-        'early_stopping': textgenerationwebui_settings.early_stopping,
-        'seed': textgenerationwebui_settings.seed,
-        'add_bos_token': textgenerationwebui_settings.add_bos_token,
-        'stopping_strings': getStoppingStrings(isImpersonate, false),
-        'truncation_length': max_context,
-        'ban_eos_token': textgenerationwebui_settings.ban_eos_token,
-        'skip_special_tokens': textgenerationwebui_settings.skip_special_tokens,
-    };
-}
-
-// TODO: move to nai-settings.js
-function getNovelGenerationData(finalPromt, this_settings, this_amount_gen) {
-    return {
-        "input": finalPromt,
-        "model": nai_settings.model_novel,
-        "use_string": true,
-        "temperature": parseFloat(nai_settings.temp_novel),
-        "max_length": this_amount_gen, // this_settings.max_length, // <= why?
-        "min_length": this_settings.min_length,
-        "tail_free_sampling": parseFloat(nai_settings.tail_free_sampling_novel),
-        "repetition_penalty": parseFloat(nai_settings.rep_pen_novel),
-        "repetition_penalty_range": parseInt(nai_settings.rep_pen_size_novel),
-        "repetition_penalty_slope": parseFloat(nai_settings.rep_pen_slope_novel),
-        "repetition_penalty_frequency": parseFloat(nai_settings.rep_pen_freq_novel),
-        "repetition_penalty_presence": parseFloat(nai_settings.rep_pen_presence_novel),
-        "top_a": this_settings.top_a,
-        "top_p": this_settings.top_p,
-        "top_k": this_settings.top_k,
-        "typical_p": this_settings.typical_p,
-        //"stop_sequences": {{187}},
-        //bad_words_ids = {{50256}, {0}, {1}};
-        //generate_until_sentence = true;
-        "use_cache": false,
-        //use_string = true;
-        "return_full_text": false,
-        "prefix": "vanilla",
-        "order": this_settings.order
-    };
 }
 
 function getGenerateUrl() {
@@ -3939,6 +3907,7 @@ async function getSettings(type) {
         //Load which API we are using
         if (settings.main_api != undefined) {
             main_api = settings.main_api;
+            $('#main_api').val(main_api);
             $("#main_api option[value=" + main_api + "]").attr(
                 "selected",
                 "true"
@@ -4054,8 +4023,8 @@ function setCharacterBlockHeight() {
 
 // Common code for message editor done and auto-save
 function updateMessage(div) {
-    let mesBlock = div.closest(".mes_block");
-    var text = mesBlock.find(".edit_textarea").val().trim();
+    const mesBlock = div.closest(".mes_block");
+    const text = mesBlock.find(".edit_textarea").val().trim();
     const bias = extractMessageBias(text);
     const mes = chat[this_edit_mes_id];
     mes["mes"] = text;
@@ -4111,7 +4080,7 @@ async function messageEditDone(div) {
     await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
 
     this_edit_mes_id = undefined;
-    saveChatConditional();
+    await saveChatConditional();
 }
 
 async function getPastCharacterChats() {
@@ -4847,8 +4816,8 @@ function swipe_left() {      // when we swipe left..but no generation.
                             easing: animation_easing,
                             queue: false,
                             complete: function () {
-                                saveChatConditional();
                                 eventSource.emit(event_types.MESSAGE_SWIPED, (chat.length - 1));
+                                saveChatConditional();
                             }
                         });
                     }
@@ -5006,6 +4975,7 @@ const swipe_right = () => {
                             easing: animation_easing,
                             queue: false,
                             complete: function () {
+                                eventSource.emit(event_types.MESSAGE_SWIPED, (chat.length - 1));
                                 if (run_generate && !is_send_press && parseInt(chat[chat.length - 1]['swipe_id']) === chat[chat.length - 1]['swipes'].length) {
                                     console.log('caught here 2');
                                     is_send_press = true;
@@ -5016,7 +4986,6 @@ const swipe_right = () => {
                                         saveChatConditional();
                                     }
                                 }
-                                eventSource.emit(event_types.MESSAGE_SWIPED, (chat.length - 1));
                             }
                         });
                     }
@@ -5859,6 +5828,7 @@ $(document).ready(function () {
     });
 
     $(document).on("click", ".exportChatButton", async function () {
+        await saveChatConditional();
         const filenamefull = $(this).closest('.select_chat_block_wrapper').find('.select_chat_block_filename').text();
         const filename = filenamefull.replace('.jsonl', '');
         const body = {
@@ -5886,6 +5856,7 @@ $(document).ready(function () {
                 console.log(data);
                 await delay(250);
                 toastr.success(data.message);
+                download(data.result, body.exportfilename, 'text/plain');
             }
         } catch (error) {
             // display error message
@@ -6114,6 +6085,7 @@ $(document).ready(function () {
             saveChatConditional();
             var $textchat = $("#chat");
             $textchat.scrollTop($textchat[0].scrollHeight);
+            eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
         }
         this_del_mes = 0;
         $('#chat .mes').last().addClass('last_mes');
@@ -6295,7 +6267,7 @@ $(document).ready(function () {
 
     //********************
     //***Message Editor***
-    $(document).on("click", ".mes_edit", function () {
+    $(document).on("click", ".mes_edit", async function () {
         if (this_chid !== undefined || selected_group) {
             // Previously system messages we're allowed to be edited
             /*const message = $(this).closest(".mes");
@@ -6306,12 +6278,8 @@ $(document).ready(function () {
 
             let chatScrollPosition = $("#chat").scrollTop();
             if (this_edit_mes_id !== undefined) {
-                let mes_edited = $("#chat")
-                    .children()
-                    .filter('[mesid="' + this_edit_mes_id + '"]')
-                    .find(".mes_block")
-                    .find(".mes_edit_done");
-                if (edit_mes_id == count_view_mes - 1) { //if the generating swipe (...)
+                let mes_edited = $(`#chat [mesid="${this_edit_mes_id}"]`).find(".mes_edit_done");
+                if (Number(edit_mes_id) == count_view_mes - 1) { //if the generating swipe (...)
                     if (chat[edit_mes_id]['swipe_id'] !== undefined) {
                         if (chat[edit_mes_id]['swipes'].length === chat[edit_mes_id]['swipe_id']) {
                             run_edit = false;
@@ -6321,7 +6289,7 @@ $(document).ready(function () {
                         hideSwipeButtons();
                     }
                 }
-                messageEditDone(mes_edited);
+                await messageEditDone(mes_edited);
             }
             $(this).closest(".mes_block").find(".mes_text").empty();
             $(this).closest(".mes_block").find(".mes_buttons").css("display", "none");
@@ -6492,8 +6460,8 @@ $(document).ready(function () {
         showSwipeButtons();
     });
 
-    $(document).on("click", ".mes_edit_done", function () {
-        messageEditDone($(this));
+    $(document).on("click", ".mes_edit_done", async function () {
+        await messageEditDone($(this));
     });
 
     $("#your_name_button").click(function () {
@@ -6709,6 +6677,9 @@ $(document).ready(function () {
                     easing: "swing",
                     start: function () {
                         jQuery(this).css('display', 'flex');
+                    },
+                    complete: function () {
+                        $("#rm_print_characters_block").trigger("scroll");
                     }
                 })
             } else {

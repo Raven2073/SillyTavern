@@ -1,4 +1,4 @@
-import { saveSettingsDebounced, getCurrentChatId, system_message_types } from "../../../script.js";
+import { saveSettingsDebounced, getCurrentChatId, system_message_types, eventSource, event_types } from "../../../script.js";
 import { humanizedDateTime } from "../../RossAscends-mods.js";
 import { getApiUrl, extension_settings, getContext } from "../../extensions.js";
 import { getFileText, onlyUnique, splitRecursive } from "../../utils.js";
@@ -34,6 +34,33 @@ const postHeaders = {
     'Content-Type': 'application/json',
     'Bypass-Tunnel-Reminder': 'bypass',
 };
+
+const chatStateFlags = {};
+
+function invalidateMessageSyncState(messageId) {
+    console.log('CHROMADB: invalidating message sync state', messageId);
+    const state = getChatSyncState();
+    state[messageId] = false;
+}
+
+function getChatSyncState() {
+    const currentChatId = getCurrentChatId();
+    if (!checkChatId(currentChatId)) {
+        return;
+    }
+
+    const context = getContext();
+    const chatState = chatStateFlags[currentChatId] || [];
+    chatState.length = context.chat.length;
+    for (let i = 0; i < chatState.length; i++) {
+        if (chatState[i] === undefined) {
+            chatState[i] = false;
+        }
+    }
+    chatStateFlags[currentChatId] = chatState;
+
+    return chatState;
+}
 
 async function loadSettings() {
     if (Object.keys(extension_settings.chromadb).length === 0) {
@@ -83,24 +110,40 @@ function onFileSplitLengthInput() {
     saveSettingsDebounced();
 }
 
+function checkChatId(chat_id) {
+    if (!chat_id || chat_id.trim() === '') {
+        toastr.error('Please select a character and try again.');
+        return false;
+    }
+    return true;
+}
+
 async function addMessages(chat_id, messages) {
     const url = new URL(getApiUrl());
     url.pathname = '/api/chromadb';
 
     const messagesDeepCopy = JSON.parse(JSON.stringify(messages));
-    const splittedMessages = [];
+    let splittedMessages = [];
 
     let id = 0;
-    messagesDeepCopy.forEach(m => {
+    messagesDeepCopy.forEach((m, index) => {
         const split = splitRecursive(m.mes, extension_settings.chromadb.split_length);
         splittedMessages.push(...split.map(text => ({
             ...m,
             mes: text,
             send_date: id,
             id: `msg-${id++}`,
+            index: index,
             extra: undefined,
         })));
     });
+
+    splittedMessages = filterSyncedMessages(splittedMessages);
+
+    // no messages to add
+    if (splittedMessages.length === 0) {
+        return { count: 0 };
+    }
 
     const transformedMessages = splittedMessages.map((m) => ({
         id: m.id,
@@ -125,8 +168,42 @@ async function addMessages(chat_id, messages) {
     return { count: 0 };
 }
 
+function filterSyncedMessages(splittedMessages) {
+    const syncState = getChatSyncState();
+    const removeIndices = [];
+    const syncedIndices = [];
+    for (let i = 0; i < splittedMessages.length; i++) {
+        const index = splittedMessages[i].index;
+
+        if (syncState[index]) {
+            removeIndices.push(i);
+            continue;
+        }
+
+        syncedIndices.push(index);
+    }
+
+    for (const index of syncedIndices) {
+        syncState[index] = true;
+    }
+
+    logSyncState(syncState);
+
+    // remove messages that are already synced
+    return splittedMessages.filter((_, i) => !removeIndices.includes(i));
+}
+
+function logSyncState(syncState) {
+    const chat = getContext().chat;
+    console.log('CHROMADB: sync state');
+    console.table(syncState.map((v, i) => ({ synced: v, name: chat[i].name, message: chat[i].mes })));
+}
+
 async function onPurgeClick() {
     const chat_id = getCurrentChatId();
+    if (!checkChatId(chat_id)) {
+        return;
+    }
     const url = new URL(getApiUrl());
     url.pathname = '/api/chromadb/purge';
 
@@ -137,7 +214,83 @@ async function onPurgeClick() {
     });
 
     if (purgeResult.ok) {
+        delete chatStateFlags[chat_id];
         toastr.success('ChromaDB context has been successfully cleared');
+    }
+}
+
+async function onExportClick() {
+    const currentChatId = getCurrentChatId();
+    if (!checkChatId(currentChatId)) {
+        return;
+    }
+    const url = new URL(getApiUrl());
+    url.pathname = '/api/chromadb/export';
+
+    const exportResult = await fetch(url, {
+        method: 'POST',
+        headers: postHeaders,
+        body: JSON.stringify({ chat_id: currentChatId }),
+    });
+
+    if (exportResult.ok) {
+        const data = await exportResult.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const href = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = href;
+        link.download = currentChatId + '.json';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    } else {
+        toastr.error('An error occurred while attempting to download the data');
+    }
+}
+
+async function onSelectImportFile(e) {
+    const file = e.target.files[0];
+    const currentChatId = getCurrentChatId();
+    if (!checkChatId(currentChatId)) {
+        return;
+    }
+
+    if (!file) {
+        return;
+    }
+
+    try {
+        toastr.info('This may take some time, depending on the file size', 'Processing...');
+
+        const text = await getFileText(file);
+        const imported = JSON.parse(text);
+
+        imported.chat_id = currentChatId;
+
+        const url = new URL(getApiUrl());
+        url.pathname = '/api/chromadb/import';
+
+        const importResult = await fetch(url, {
+            method: 'POST',
+            headers: postHeaders,
+            body: JSON.stringify(imported),
+        });
+
+        if (importResult.ok) {
+            const importResultData = await importResult.json();
+
+            toastr.success(`Number of chunks: ${importResultData.count}`, 'Injected successfully!');
+            return importResultData;
+        } else {
+            throw new Error();
+        }
+    }
+    catch (error) {
+        console.log(error);
+        toastr.error('Something went wrong while importing the data');
+    }
+    finally {
+        e.target.form.reset();
     }
 }
 
@@ -162,14 +315,16 @@ async function queryMessages(chat_id, query) {
 
 async function onSelectInjectFile(e) {
     const file = e.target.files[0];
-
+    const currentChatId = getCurrentChatId();
+    if (!checkChatId(currentChatId)) {
+        return;
+    }
     if (!file) {
         return;
     }
 
     try {
         toastr.info('This may take some time, depending on the file size', 'Processing...');
-        const currentChatId = getCurrentChatId();
         const text = await getFileText(file);
 
         const split = splitRecursive(text, extension_settings.chromadb.file_split_length).filter(onlyUnique);
@@ -281,10 +436,11 @@ jQuery(async () => {
     <div class="chromadb_settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Infinity Context</b>
+            <b>Smart Context</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
+            <p>This extension rearranges the messages in the current chat to keep more relevant information in the context. Adjust the sliders below based on average amount of messages in your prompt (refer to the chat cut-off line).</p>
             <span>Memory Injection Strategy</span>
             <select id="chromadb_strategy">
                 <option value="original">Replace non-kept chat items with memories</option>
@@ -301,16 +457,25 @@ jQuery(async () => {
             <div class="flex-container spaceEvenly">
                 <div id="chromadb_inject" title="Upload custom textual data to use in the context of the current chat" class="menu_button">
                     <i class="fa-solid fa-file-arrow-up"></i>
-                    <span>Inject Data to the Context (TXT file)</span>
+                    <span>Inject Data (TXT file)</span>
+                </div>
+                <div id="chromadb_export" title="Export all of the current chromadb data for this current chat" class="menu_button">
+                    <i class="fa-solid fa-file-export"></i>
+                    <span>Export</span>
+                </div>
+                <div id="chromadb_import" title="Import a full chromadb export for this current chat" class="menu_button">
+                    <i class="fa-solid fa-file-import"></i>
+                    <span>Import</span>
                 </div>
                 <div id="chromadb_purge" title="Force purge all the data related to the current chat from the database" class="menu_button">
                     <i class="fa-solid fa-broom"></i>
-                    <span>Purge Current Chat from the DB</span>
+                    <span>Purge Chat from the DB</span>
                 </div>
             </div>
-            <small><i>Since ChromaDB state is not persisted to disk by default, you'll need to inject text data every time the Extras API server is restarted.</i></small>
+            <small><i>Local ChromaDB now persists to disk by default. The default folder is .chroma_db, and you can set a different folder with the --chroma-folder argument. If you are using the Extras Colab notebook, you will need to inject the text data every time the Extras API server is restarted.</i></small>
         </div>
         <form><input id="chromadb_inject_file" type="file" accept="text/plain" hidden></form>
+        <form><input id="chromadb_import_file" type="file" accept="application/json" hidden></form>
     </div>`;
 
     $('#extensions_settings').append(settingsHtml);
@@ -320,8 +485,19 @@ jQuery(async () => {
     $('#chromadb_split_length').on('input', onSplitLengthInput);
     $('#chromadb_file_split_length').on('input', onFileSplitLengthInput);
     $('#chromadb_inject').on('click', () => $('#chromadb_inject_file').trigger('click'));
+    $('#chromadb_import').on('click', () => $('#chromadb_import_file').trigger('click'));
     $('#chromadb_inject_file').on('change', onSelectInjectFile);
+    $('#chromadb_import_file').on('change', onSelectImportFile);
     $('#chromadb_purge').on('click', onPurgeClick);
-
+    $('#chromadb_export').on('click', onExportClick);
     await loadSettings();
+
+    // Not sure if this is needed, but it's here just in case
+    eventSource.on(event_types.MESSAGE_DELETED, getChatSyncState);
+    eventSource.on(event_types.MESSAGE_RECEIVED, getChatSyncState);
+    eventSource.on(event_types.MESSAGE_SENT, getChatSyncState);
+    // Will make the sync state update when a message is edited or swiped
+    eventSource.on(event_types.MESSAGE_EDITED, invalidateMessageSyncState);
+    eventSource.on(event_types.MESSAGE_SWIPED, invalidateMessageSyncState);
 });
+
